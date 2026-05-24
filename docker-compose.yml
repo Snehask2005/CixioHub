@@ -1,0 +1,31 @@
+version: '3.9'
+
+services:
+
+  postgres:
+    image: postgres:16
+    container_name: cixio_postgres
+    environment:
+      POSTGRES_USER: cixio
+      POSTGRES_PASSWORD: cixio123
+      POSTGRES_DB: cixiohub
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: cixio_redis
+    ports:
+      - "6379:6379"
+
+  rabbitmq:
+    image: rabbitmq:management
+    container_name: cixio_rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+volumes:
+  postgres_data:
