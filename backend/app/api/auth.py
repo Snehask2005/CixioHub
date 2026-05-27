@@ -2,21 +2,18 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.models.user import User
 from app.auth.utils import hash_password
-from datetime import datetime, timedelta
-from fastapi import Depends
+from app.db.session import get_db
+from app.notifications.publisher import (
+    publish_notification
+)
+from app.core.redis import redis_client
 
-from sqlalchemy.orm import Session
-
-from app.db.database import get_db
-
-from app.models.password_reset_otp import (
-    PasswordResetOTP
+from app.auth.dependencies import (
+    get_current_user
 )
 
-from app.db.database import get_db
-
-from app.models.password_reset_otp import (
-    PasswordResetOTP
+from fastapi.security import (
+    OAuth2PasswordRequestForm
 )
 
 from app.schemas.user import (
@@ -30,7 +27,6 @@ from app.services.user_service import (
     get_user_by_email
 )
 
-from app.db.session import get_db
 
 from app.core.security import (
     verify_password,
@@ -45,8 +41,6 @@ from app.auth.schemas import (
     ResetPasswordRequest
 )
 
-
-
 from app.otp.publisher import (
     publish_otp_event
 )
@@ -59,11 +53,12 @@ router = APIRouter(
 )
 
 
+
 @router.post(
     "/register",
     response_model=UserResponse
 )
-def register(
+async def register(
     user_data: UserCreate,
     db: Session = Depends(get_db)
 ):
@@ -74,35 +69,58 @@ def register(
     )
 
     if existing_user:
+
         raise HTTPException(
             status_code=400,
-            detail="Email already registered"
+            detail="User already exists. Please login."
         )
 
-    return create_user(db, user_data)
+    user = create_user(
+        db,
+        user_data
+    )
+
+    await publish_notification({
+
+        "email": user.email,
+
+        "subject": "Welcome to SmartHub",
+
+        "message": f"""
+        Hi {user.email},
+
+        Welcome to SmartHub.
+
+        Your account has been created successfully.
+        """
+    })
+
+    return user
 
 
 @router.post("/login")
 def login(
-    user_data: UserLogin,
+    form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
 
     user = get_user_by_email(
         db,
-        user_data.email
+        form_data.username
     )
 
     if not user:
+
         raise HTTPException(
             status_code=401,
             detail="Invalid credentials"
         )
 
     if not verify_password(
-        user_data.password,
+        form_data.password,
         user.hashed_password
     ):
+
         raise HTTPException(
             status_code=401,
             detail="Invalid credentials"
@@ -117,31 +135,29 @@ def login(
         "token_type": "bearer"
     }
 
+@router.get("/me")
+async def get_me(
+    current_user: User = Depends(
+        get_current_user
+    )
+):
+
+    return {
+        "id": current_user.id,
+        "email": current_user.email
+    }
+
 @router.post("/forgot-password")
 async def forgot_password(
     payload: ForgotPasswordRequest,
     db: Session = Depends(get_db)
 ):
-    db.query(
-        PasswordResetOTP
-    ).filter(
-        PasswordResetOTP.email == payload.email
-    ).delete()
-
-    db.commit()
-
-    otp = str(
-        random.randint(100000, 999999)
+    otp = str(random.randint(100000, 999999))
+    redis_client.setex(
+        f"otp:{payload.email}",
+        300,
+        otp
     )
-
-    otp_entry = PasswordResetOTP(
-        email=payload.email,
-        otp=otp
-    )
-
-    db.add(otp_entry)
-
-    db.commit()
 
     await publish_otp_event({
         "email": payload.email,
@@ -159,28 +175,27 @@ async def verify_otp(
     db: Session = Depends(get_db)
 ):
 
-    otp_entry = db.query(
-        PasswordResetOTP
-    ).filter(
-        PasswordResetOTP.email == payload.email,
-        PasswordResetOTP.otp == payload.otp
-    ).first()
+    stored_otp = redis_client.get(
+    f"otp:{payload.email}"
+    )
 
-    if not otp_entry:
+    if not stored_otp:
+
+        return {
+            "message": "OTP expired or invalid"
+        }
+
+    if stored_otp != payload.otp:
 
         return {
             "message": "Invalid OTP"
         }
-    if datetime.utcnow() - otp_entry.created_at > timedelta(minutes=5):
 
-        return {
-            "message": "OTP expired"
-        }
-
-
-    otp_entry.is_verified = True
-
-    db.commit()
+    redis_client.setex(
+        f"verified:{payload.email}",
+        300,
+        "true"
+    )
 
     return {
         "message": "OTP verified successfully"
@@ -193,14 +208,11 @@ async def reset_password(
     db: Session = Depends(get_db)
 ):
 
-    otp_entry = db.query(
-        PasswordResetOTP
-    ).filter(
-        PasswordResetOTP.email == payload.email,
-        PasswordResetOTP.is_verified == True
-    ).first()
+    verified = redis_client.get(
+        f"verified:{payload.email}"
+    )
 
-    if not otp_entry:
+    if not verified:
 
         return {
             "message": "OTP verification required"
@@ -221,9 +233,16 @@ async def reset_password(
     )
 
     db.commit()
+
     db.refresh(user)
-    db.delete(otp_entry)
-    db.commit()
+
+    redis_client.delete(
+        f"otp:{payload.email}"
+    )
+
+    redis_client.delete(
+        f"verified:{payload.email}"
+    )
 
     return {
         "message": "Password reset successful"

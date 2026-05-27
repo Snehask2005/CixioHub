@@ -3,6 +3,15 @@ import asyncio
 import json
 import random
 
+import aiosmtplib
+
+from email.message import EmailMessage
+
+from app.core.config import (
+    EMAIL_ADDRESS,
+    EMAIL_PASSWORD
+)
+
 from app.notifications.constants import (
     NOTIFICATION_EXCHANGE,
     EMAIL_QUEUE,
@@ -17,14 +26,38 @@ MAX_RETRIES = 3
 
 async def process_notification(data):
 
-    print(f"Processing notification for {data['email']}")
+    recipient = data["email"]
 
-    failure = True
+    subject = data["subject"]
 
-    if failure:
-        raise Exception("Simulated notification failure")
+    content = data["message"]
 
-    print("Notification sent successfully")
+    print(
+        f"Sending notification to {recipient}"
+    )
+
+    message = EmailMessage()
+
+    message["From"] = EMAIL_ADDRESS
+
+    message["To"] = recipient
+
+    message["Subject"] = subject
+
+    message.set_content(content)
+
+    await aiosmtplib.send(
+        message,
+        hostname="smtp.gmail.com",
+        port=587,
+        start_tls=True,
+        username=EMAIL_ADDRESS,
+        password=EMAIL_PASSWORD
+    )
+
+    print(
+        "Notification sent successfully"
+    )
 
 
 async def consume():
