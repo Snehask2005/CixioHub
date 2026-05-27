@@ -2,30 +2,62 @@ import aio_pika
 import asyncio
 import json
 import random
+import aiosmtplib
 
-from app.notifications.constants import (
-    NOTIFICATION_EXCHANGE,
-    EMAIL_QUEUE,
-    EMAIL_RETRY_QUEUE,
-    EMAIL_FAILED_QUEUE,
-    ROUTING_KEY
+from app.otp.constants import (
+    OTP_EXCHANGE,
+    OTP_QUEUE,
+    OTP_RETRY_QUEUE,
+    OTP_FAILED_QUEUE,
+    OTP_ROUTING_KEY
 )
 
+from email.message import EmailMessage
+
+from app.core.config import (
+    EMAIL_ADDRESS,
+    EMAIL_PASSWORD
+)
 
 MAX_RETRIES = 3
 
 
-async def process_notification(data):
+async def process_otp(data):
 
-    print(f"Processing notification for {data['email']}")
+    recipient = data["email"]
 
-    failure = True
+    otp = data["otp"]
 
-    if failure:
-        raise Exception("Simulated notification failure")
+    print(
+        f"Sending OTP {otp} to {recipient}"
+    )
 
-    print("Notification sent successfully")
+    message = EmailMessage()
 
+    message["From"] = EMAIL_ADDRESS
+    message["To"] = recipient
+    message["Subject"] = "SmartHub Password Reset OTP"
+
+    message.set_content(
+        f"""
+        Your SmartHub OTP is:
+
+        {otp}
+
+        This OTP will expire in 5 minutes.
+        """
+    )
+
+    await aiosmtplib.send(
+        message,
+        hostname="smtp.gmail.com",
+        port=587,
+        start_tls=True,
+        username=EMAIL_ADDRESS,
+        password=EMAIL_PASSWORD
+    )
+
+    print("OTP sent successfully")
 
 async def consume():
 
@@ -36,43 +68,44 @@ async def consume():
     channel = await connection.channel()
 
     exchange = await channel.declare_exchange(
-        NOTIFICATION_EXCHANGE,
+        OTP_EXCHANGE,
         aio_pika.ExchangeType.DIRECT,
         durable=True
     )
 
     queue = await channel.declare_queue(
-        EMAIL_QUEUE,
+        OTP_QUEUE,
         durable=True
     )
 
     retry_queue = await channel.declare_queue(
-        EMAIL_RETRY_QUEUE,
+        OTP_RETRY_QUEUE,
         durable=True,
         arguments={
             "x-message-ttl": 10000,
-            "x-dead-letter-exchange": NOTIFICATION_EXCHANGE,
-            "x-dead-letter-routing-key": ROUTING_KEY
+            "x-dead-letter-exchange": OTP_EXCHANGE,
+            "x-dead-letter-routing-key": OTP_ROUTING_KEY
         }
     )
 
     failed_queue = await channel.declare_queue(
-    EMAIL_FAILED_QUEUE,
-    durable=True
+        OTP_FAILED_QUEUE,
+        durable=True
     )
 
     await queue.bind(
         exchange,
-        routing_key=ROUTING_KEY
+        routing_key=OTP_ROUTING_KEY
     )
+
     await retry_queue.bind(
-    exchange,
-    routing_key="email.retry"
+        exchange,
+        routing_key="otp.retry"
     )
 
     await failed_queue.bind(
-    exchange,
-    routing_key="email.failed"
+        exchange,
+        routing_key="otp.failed"
     )
 
     async with queue.iterator() as queue_iter:
@@ -87,7 +120,7 @@ async def consume():
 
                 try:
 
-                    await process_notification(data)
+                    await process_otp(data)
 
                 except Exception as e:
 
@@ -102,12 +135,12 @@ async def consume():
 
                     print(
                         f"""
-                        Notification failed
+                        OTP sending failed
                         Email: {data['email']}
                         Retry Count: {retry_count}
                         Error: {str(e)}
                         """
-                    )   
+                    )
 
                     if retry_count <= MAX_RETRIES:
 
@@ -116,7 +149,7 @@ async def consume():
                                 body=json.dumps(data).encode(),
                                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT
                             ),
-                            routing_key="email.retry"
+                            routing_key="otp.retry"
                         )
 
                     else:
@@ -126,14 +159,13 @@ async def consume():
                                 body=json.dumps(data).encode(),
                                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT
                             ),
-                            routing_key="email.failed"
+                            routing_key="otp.failed"
                         )
 
                         print(
                             f"""
-                            Notification permanently failed
+                            OTP permanently failed
                             Email: {data['email']}
-                            Total Retries: {retry_count}
                             """
                         )
 
