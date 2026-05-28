@@ -29,8 +29,11 @@ from app.services.user_service import (
 
 
 from app.core.security import (
+    create_refresh_token,
     verify_password,
-    create_access_token
+    create_access_token,
+    SECRET_KEY,
+    ALGORITHM
 )
 
 import random
@@ -38,13 +41,14 @@ import random
 from app.auth.schemas import (
     ForgotPasswordRequest,
     VerifyOtpRequest,
-    ResetPasswordRequest
+    ResetPasswordRequest,
+    RefreshTokenRequest
 )
 
 from app.otp.publisher import (
     publish_otp_event
 )
-
+from jose import jwt, JWTError
 
 
 router = APIRouter(
@@ -130,8 +134,19 @@ def login(
         data={"sub": user.email}
     )
 
+    refresh_token = create_refresh_token(
+        data={"sub": user.email}
+    )
+
+    redis_client.setex(
+        f"refresh:{user.email}",
+        604800,
+        refresh_token
+    )
+
     return {
         "access_token": access_token,
+        "refresh_token": refresh_token,
         "token_type": "bearer"
     }
 
@@ -146,6 +161,55 @@ async def get_me(
         "id": current_user.id,
         "email": current_user.email
     }
+
+@router.post("/refresh")
+async def refresh_access_token(
+    payload: RefreshTokenRequest
+):
+
+    try:
+
+        payload_data = jwt.decode(
+            payload.refresh_token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
+
+        email = payload_data.get("sub")
+
+        if not email:
+
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid refresh token"
+            )
+
+        stored_token = redis_client.get(
+            f"refresh:{email}"
+        )
+
+        if stored_token != payload.refresh_token:
+
+            raise HTTPException(
+                status_code=401,
+                detail="Refresh token invalidated"
+            )
+
+        new_access_token = create_access_token(
+            data={"sub": email}
+        )
+
+        return {
+            "access_token": new_access_token,
+            "token_type": "bearer"
+        }
+
+    except JWTError:
+
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid refresh token"
+        )
 
 @router.post("/forgot-password")
 async def forgot_password(
@@ -247,3 +311,40 @@ async def reset_password(
     return {
         "message": "Password reset successful"
     }
+
+@router.post("/logout")
+async def logout(
+    payload: RefreshTokenRequest
+):
+
+    try:
+
+        payload_data = jwt.decode(
+            payload.refresh_token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
+
+        email = payload_data.get("sub")
+
+        if not email:
+
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid refresh token"
+            )
+
+        redis_client.delete(
+            f"refresh:{email}"
+        )
+
+        return {
+            "message": "Logged out successfully"
+        }
+
+    except JWTError:
+
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid refresh token"
+        )
