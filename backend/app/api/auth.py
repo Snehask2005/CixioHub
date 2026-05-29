@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.models.user import User
+from app.models.notification import Notification
 from app.auth.utils import hash_password
 from app.db.session import get_db
 from app.notifications.publisher import (
@@ -50,6 +51,8 @@ from app.otp.publisher import (
 )
 from jose import jwt, JWTError
 
+from app.services.notification_service import create_notification
+
 
 router = APIRouter(
     prefix="/auth",
@@ -82,6 +85,17 @@ async def register(
     user = create_user(
         db,
         user_data
+    )
+
+    from app.services.notification_service import (
+        create_notification
+    )
+
+    create_notification(
+        db,
+        user.id,
+        "Welcome to SmartHub",
+        "Your account has been created successfully."
     )
 
     await publish_notification({
@@ -159,7 +173,9 @@ async def get_me(
 
     return {
         "id": current_user.id,
-        "email": current_user.email
+        "email": current_user.email,
+        "full_name":
+            current_user.full_name
     }
 
 @router.post("/refresh")
@@ -348,3 +364,4 @@ async def logout(
             status_code=401,
             detail="Invalid refresh token"
         )
+    

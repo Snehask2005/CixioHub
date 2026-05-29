@@ -7,6 +7,7 @@ from app.db.database import (
 
 
 from app.api.auth import router as auth_router
+from app.api.notification import router as notification_router
 from fastapi.middleware.cors import CORSMiddleware
 
 
@@ -31,4 +32,7 @@ async def root():
 Base.metadata.create_all(bind=engine)
 
 app.include_router(auth_router)
+app.include_router(
+    notification_router
+)
 
